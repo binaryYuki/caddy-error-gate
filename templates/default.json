@@ -1,0 +1,7 @@
+{
+  "status": "{{ .Status }}",
+  "code": "{{ .Text }}",
+  "message": "{{ .Message | jsonEscape }}",
+  "description": "{{ .Description | jsonEscape }}",
+  "traceId": "{{ .TraceID }}"
+}
