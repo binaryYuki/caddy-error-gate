@@ -237,15 +237,16 @@
         .details {
             margin-top: 14px;
             display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
+            flex-direction: column;
+            align-items: center;
             gap: 8px;
         }
 
         .details div {
+            max-width: min(600px, 100%);
             word-break: break-all;
             padding: 5px 10px;
-            border-radius: 999px;
+            border-radius: var(--radius-sm);
             background: var(--card-bg);
             border: 1px solid var(--card-border);
             font-size: 11.5px;
@@ -255,6 +256,34 @@
         code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             color: #555;
+        }
+
+        .support-action {
+            margin-top: 24px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 22px;
+            border-radius: var(--radius-sm);
+            background: var(--text);
+            color: var(--bg);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid var(--text);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .btn:active {
+            transform: translateY(0);
         }
 
         /* ----- Responsive breakpoints ----- */
@@ -307,13 +336,16 @@
             }
 
             .arrow {
-                transform: rotate(90deg);
                 margin: 0 auto;
                 background: var(--card-bg);
                 border-left: 1px solid var(--card-border);
                 border-right: 1px solid var(--card-border);
                 padding: 4px 0;
                 width: 100%;
+            }
+
+            .arrow svg {
+                transform: rotate(90deg);
             }
 
             .card {
@@ -372,7 +404,7 @@
         <h1>{{ .Status }} {{ .Text }}</h1>
 
         <p class="message" id="error-description">
-            {{ .I18n.Description }}
+            {{ .ErrorDescription }}
         </p>
 
         <hr>
@@ -439,7 +471,7 @@
         </section>
 
         <footer>
-            <div class="server">nginx</div>
+            <div class="server">Catyuki Web Service</div>
 
             <!-- Optional request metadata -->
             <div class="details">
@@ -458,6 +490,14 @@
                 <!-- {{ if .RequestID }} -->
                 <div>{{ .I18n.RequestID }}: <code>{{ .RequestID }}</code></div>
                 <!-- {{ end }} -->
+
+                <!-- {{ if .EdgeID }} -->
+                <div id="edge-id-box">{{ .I18n.EdgeID }}: <code>{{ .EdgeID }}</code></div>
+                <!-- {{ end }} -->
+            </div>
+
+            <div class="support-action">
+                <a id="support-btn" href="mailto:support@catyuki.com" class="btn">{{ .I18n.ContactSupport }}</a>
             </div>
         </footer>
     </main>
@@ -467,6 +507,67 @@
     // Connection status and messages are fully localized and rendered on the server side.
     const errorCode = parseInt(`{{ .Status }}`, 10);
     const message = `{{ .Text }}`.trim();
+
+    // Dynamically construct and update the support mailto link with trace IDs
+    function updateSupportLink() {
+        const supportBtn = document.getElementById('support-btn');
+        if (!supportBtn) return;
+
+        const hostVal = `{{ .Host }}`.trim();
+        const uriVal = `{{ .OriginalURI }}`.trim();
+        const traceVal = `{{ .TraceID }}`.trim();
+        const reqVal = `{{ .RequestID }}`.trim();
+
+        // Edge ID might be dynamically added, so let's get it from the DOM
+        const edgeEl = document.getElementById('edge-id-box');
+        let edgeVal = "";
+        if (edgeEl) {
+            const codeEl = edgeEl.querySelector('code');
+            if (codeEl) edgeVal = codeEl.textContent.trim();
+        } else {
+            edgeVal = `{{ .EdgeID }}`.trim();
+        }
+
+        let bodyText = "Hello Catyuki Support,\r\n\r\nI encountered an error while browsing. Here are the technical details:\r\n\r\n";
+        bodyText += `- Error Status: ${errorCode} ${message}\r\n`;
+        if (hostVal) bodyText += `- Host: ${hostVal}\r\n`;
+        if (uriVal) bodyText += `- Original URI: ${uriVal}\r\n`;
+        if (traceVal) bodyText += `- Trace ID: ${traceVal}\r\n`;
+        if (reqVal) bodyText += `- Request ID: ${reqVal}\r\n`;
+        if (edgeVal) bodyText += `- Edge ID: ${edgeVal}\r\n`;
+        bodyText += "\r\n[Please describe what happened here]\r\n";
+
+        const subject = `Error Report: ${errorCode} ${message}`;
+        supportBtn.href = `mailto:support@catyuki.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyText)}`;
+    }
+
+    // Initialize the support link
+    updateSupportLink();
+
+    // Check if Edge ID is already rendered by the server.
+    // If not, try to fetch the headers dynamically to see if a downstream CDN/Edge proxy injected it in the response headers.
+    if (!document.getElementById('edge-id-box')) {
+        fetch(window.location.href, { method: 'HEAD' })
+            .then(res => {
+                const edgeId = res.headers.get('x-catyuki-edge-id');
+                if (edgeId) {
+                    const detailsDiv = document.querySelector('.details');
+                    if (detailsDiv) {
+                        const newBox = document.createElement('div');
+                        newBox.id = 'edge-id-box';
+                        newBox.innerHTML = `{{ .I18n.EdgeID }}: <code>${escapeHtml(edgeId)}</code>`;
+                        detailsDiv.appendChild(newBox);
+                        // Re-update the support link to include the dynamically fetched Edge ID
+                        updateSupportLink();
+                    }
+                }
+            })
+            .catch(err => console.warn('Failed to fetch edge ID:', err));
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
 </script>
 </body>
 </html>

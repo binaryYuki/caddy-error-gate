@@ -116,15 +116,18 @@ func TestErrorGate_InterceptHTML(t *testing.T) {
 	}
 
 	// Verify headers stripped
-	for _, h := range []string{"Age", "Cloudflare-CDN-Cache-Control", "CDN-Cache-Control", "Surrogate-Control", "ETag", "Last-Modified", "Content-Encoding", "Content-Length"} {
+	for _, h := range []string{"Age", "Cloudflare-CDN-Cache-Control", "CDN-Cache-Control", "ETag", "Last-Modified", "Content-Encoding", "Content-Length"} {
 		if val := w.Header().Get(h); val != "" {
 			t.Errorf("header %s should have been stripped, got %q", h, val)
 		}
 	}
 
 	// Verify cache control set to prevent caching
-	if cc := w.Header().Get("Cache-Control"); cc != "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" {
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store, max-age=0" {
 		t.Errorf("expected Cache-Control to prevent caching, got %q", cc)
+	}
+	if sc := w.Header().Get("Surrogate-Control"); sc != "no-store" {
+		t.Errorf("expected Surrogate-Control to prevent caching, got %q", sc)
 	}
 	if pragma := w.Header().Get("Pragma"); pragma != "no-cache" {
 		t.Errorf("expected Pragma to be no-cache, got %q", pragma)
@@ -148,10 +151,13 @@ func TestErrorGate_InterceptHTML(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "500 Internal Server Error") {
 		t.Errorf("expected HTML body to contain error details, got %q", w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "Internal Server Error — 服务器无法完成该请求。") {
+		t.Errorf("expected HTML body to contain standard error description, got %q", w.Body.String())
+	}
 	if !strings.Contains(w.Body.String(), "抱歉哦，服务器的小马达突然卡住了，程序员哥哥正在疯狂抢修中！") {
 		t.Errorf("expected HTML body to contain cute error description, got %q", w.Body.String())
 	}
-	if w.Header().Get("X-Trace-Id") == "" {
+	if w.Header().Get("x-Catyuki-Lb-Id") == "" {
 		t.Error("expected trace ID header to be set")
 	}
 }
@@ -220,7 +226,7 @@ func TestErrorGate_CustomTemplates(t *testing.T) {
 	if _, err := htmlFile.WriteString("Custom HTML {{ .Status }} {{ .Text }} {{ .TraceID }}"); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
-	err := htmlFile.Close()
+	err = htmlFile.Close()
 	if err != nil {
 		return
 	}
@@ -451,3 +457,155 @@ func TestErrorGate_I18n(t *testing.T) {
 		})
 	}
 }
+
+func TestErrorGate_RequestIDPassthrough(t *testing.T) {
+	t.Run("default candidate header in response", func(t *testing.T) {
+		g := ErrorGate{MinStatus: 500, MaxStatus: 599}
+		if err := g.Provision(caddy.Context{}); err != nil {
+			t.Fatalf("Provision failed: %v", err)
+		}
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		next := mockHandler{
+			status: http.StatusInternalServerError,
+			headers: http.Header{
+				"Requestid": []string{"upstream-req-123"},
+			},
+		}
+		if err := g.ServeHTTP(w, req, next); err != nil {
+			t.Fatalf("ServeHTTP failed: %v", err)
+		}
+		if reqID := w.Header().Get("X-Catyuki-Req-Id"); reqID != "upstream-req-123" {
+			t.Errorf("expected X-Catyuki-Req-Id 'upstream-req-123', got %q", reqID)
+		}
+		if origID := w.Header().Get("Requestid"); origID != "" {
+			t.Errorf("expected original header Requestid to be stripped, got %q", origID)
+		}
+	})
+
+	t.Run("custom configured header in response", func(t *testing.T) {
+		g := ErrorGate{
+			MinStatus:        500,
+			MaxStatus:        599,
+			RequestIDHeaders: []string{"X-Custom-Req-Id"},
+		}
+		if err := g.Provision(caddy.Context{}); err != nil {
+			t.Fatalf("Provision failed: %v", err)
+		}
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		next := mockHandler{
+			status: http.StatusInternalServerError,
+			headers: http.Header{
+				"X-Custom-Req-Id": []string{"custom-val-789"},
+			},
+		}
+		if err := g.ServeHTTP(w, req, next); err != nil {
+			t.Fatalf("ServeHTTP failed: %v", err)
+		}
+		if reqID := w.Header().Get("X-Catyuki-Req-Id"); reqID != "custom-val-789" {
+			t.Errorf("expected X-Catyuki-Req-Id 'custom-val-789', got %q", reqID)
+		}
+		if origID := w.Header().Get("X-Custom-Req-Id"); origID != "" {
+			t.Errorf("expected original header X-Custom-Req-Id to be stripped, got %q", origID)
+		}
+	})
+
+	t.Run("header in request", func(t *testing.T) {
+		g := ErrorGate{MinStatus: 500, MaxStatus: 599}
+		if err := g.Provision(caddy.Context{}); err != nil {
+			t.Fatalf("Provision failed: %v", err)
+		}
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("x-request-id", "client-req-abc")
+		w := httptest.NewRecorder()
+		next := mockHandler{
+			status: http.StatusInternalServerError,
+		}
+		if err := g.ServeHTTP(w, req, next); err != nil {
+			t.Fatalf("ServeHTTP failed: %v", err)
+		}
+		if reqID := w.Header().Get("X-Catyuki-Req-Id"); reqID != "client-req-abc" {
+			t.Errorf("expected X-Catyuki-Req-Id 'client-req-abc', got %q", reqID)
+		}
+	})
+}
+
+func TestErrorGate_NonBrowserClients(t *testing.T) {
+	g := ErrorGate{MinStatus: 500, MaxStatus: 599}
+	if err := g.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		userAgent  string
+		accept     string
+		expectJSON bool
+	}{
+		{
+			name:       "browser Chrome",
+			userAgent:  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+			accept:     "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+			expectJSON: false,
+		},
+		{
+			name:       "curl client",
+			userAgent:  "curl/7.64.1",
+			accept:     "*/*",
+			expectJSON: true,
+		},
+		{
+			name:       "python requests",
+			userAgent:  "python-requests/2.25.1",
+			accept:     "*/*",
+			expectJSON: true,
+		},
+		{
+			name:       "go client",
+			userAgent:  "Go-http-client/1.1",
+			accept:     "",
+			expectJSON: true,
+		},
+		{
+			name:       "java okhttp",
+			userAgent:  "okhttp/3.14.9",
+			accept:     "",
+			expectJSON: true,
+		},
+		{
+			name:       "empty headers",
+			userAgent:  "",
+			accept:     "",
+			expectJSON: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test-path", nil)
+			if tc.userAgent != "" {
+				req.Header.Set("User-Agent", tc.userAgent)
+			}
+			if tc.accept != "" {
+				req.Header.Set("Accept", tc.accept)
+			}
+			w := httptest.NewRecorder()
+			next := mockHandler{
+				status: http.StatusInternalServerError,
+				body:   "some upstream error body",
+			}
+
+			if err := g.ServeHTTP(w, req, next); err != nil {
+				t.Fatalf("ServeHTTP failed: %v", err)
+			}
+
+			contentType := w.Header().Get("Content-Type")
+			isJSON := strings.Contains(contentType, "application/json")
+			if isJSON != tc.expectJSON {
+				t.Errorf("expected isJSON to be %v, got %v (Content-Type: %q)", tc.expectJSON, isJSON, contentType)
+			}
+		})
+	}
+}
+

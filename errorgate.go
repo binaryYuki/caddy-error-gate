@@ -33,12 +33,13 @@ func init() {
 }
 
 type ErrorGate struct {
-	TraceHeader  string `json:"trace_header,omitempty"`
-	Exclude      []int  `json:"exclude,omitempty"`
-	MinStatus    int    `json:"min_status,omitempty"`
-	MaxStatus    int    `json:"max_status,omitempty"`
-	HTMLTemplate string `json:"html_template,omitempty"`
-	JSONTemplate string `json:"json_template,omitempty"`
+	TraceHeader      string   `json:"trace_header,omitempty"`
+	Exclude          []int    `json:"exclude,omitempty"`
+	MinStatus        int      `json:"min_status,omitempty"`
+	MaxStatus        int      `json:"max_status,omitempty"`
+	HTMLTemplate     string   `json:"html_template,omitempty"`
+	JSONTemplate     string   `json:"json_template,omitempty"`
+	RequestIDHeaders []string `json:"request_id_headers,omitempty"`
 
 	excludeSet map[int]struct{}
 	tpl        *template.Template
@@ -54,7 +55,7 @@ func (ErrorGate) CaddyModule() caddy.ModuleInfo {
 
 func (g *ErrorGate) Provision(caddy.Context) error {
 	if g.TraceHeader == "" {
-		g.TraceHeader = "X-Trace-Id"
+		g.TraceHeader = "x-Catyuki-Lb-Id"
 	}
 	if g.MinStatus == 0 {
 		g.MinStatus = 400
@@ -170,14 +171,35 @@ func (g ErrorGate) render(w http.ResponseWriter, r *http.Request, status int, tr
 
 	lang := getLanguage(r)
 	i18nData := getI18n(lang, status)
+	statusText := http.StatusText(status)
+	errDesc := getErrorDescription(lang, status, statusText)
+	reqID := g.findRequestID(r.Header, originalHeader)
+	edgeID := ""
+	for k, vv := range r.Header {
+		if strings.EqualFold(k, "X-Catyuki-Edge-Id") && len(vv) > 0 {
+			edgeID = vv[0]
+			break
+		}
+	}
+	if edgeID == "" {
+		for k, vv := range originalHeader {
+			if strings.EqualFold(k, "X-Catyuki-Edge-Id") && len(vv) > 0 {
+				edgeID = vv[0]
+				break
+			}
+		}
+	}
 
 	data := map[string]any{
-		"Status":      status,
-		"Text":        http.StatusText(status),
-		"TraceID":     traceID,
-		"Message":     msg,
-		"Description": i18nData.Description,
-		"I18n":        i18nData,
+		"Status":           status,
+		"Text":             statusText,
+		"TraceID":          traceID,
+		"Message":          msg,
+		"Description":      i18nData.Description,
+		"ErrorDescription": errDesc,
+		"I18n":             i18nData,
+		"RequestID":        reqID,
+		"EdgeID":           edgeID,
 	}
 
 	if wantsJSON(r) {
@@ -209,9 +231,15 @@ func (g ErrorGate) render(w http.ResponseWriter, r *http.Request, status int, tr
 	dstHeader.Del("Last-Modified")
 
 	// Set standard cache control headers to prevent caching
-	dstHeader.Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0")
+	// Prevent browser, proxy, and CDN caching
+	dstHeader.Set("Cache-Control", "no-store, max-age=0")
+	dstHeader.Set("Surrogate-Control", "no-store")
 	dstHeader.Set("Pragma", "no-cache")
 	dstHeader.Set("Expires", "0")
+
+	// Security hardening
+	dstHeader.Set("X-Content-Type-Options", "nosniff")
+	dstHeader.Set("Content-Security-Policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 	// Strip content headers that are no longer valid for the new body
 	dstHeader.Del("Content-Length")
@@ -219,9 +247,31 @@ func (g ErrorGate) render(w http.ResponseWriter, r *http.Request, status int, tr
 	dstHeader.Del("Content-Range")
 	dstHeader.Del("Accept-Ranges")
 
+	// Strip upstream request ID headers from response to avoid duplicate/inconsistent headers
+	deleteHeaderFold := func(h http.Header, name string) {
+		var keysToDelete []string
+		for k := range h {
+			if strings.EqualFold(k, name) {
+				keysToDelete = append(keysToDelete, k)
+			}
+		}
+		for _, k := range keysToDelete {
+			h.Del(k)
+		}
+	}
+	for _, h := range g.RequestIDHeaders {
+		deleteHeaderFold(dstHeader, h)
+	}
+	for _, h := range []string{"requestid", "x-requestid", "x-request-id", "x-req-id", "requestID"} {
+		deleteHeaderFold(dstHeader, h)
+	}
+
 	// Set/overwrite custom headers
 	dstHeader.Set("Content-Type", contentType)
 	dstHeader.Set(g.TraceHeader, traceID)
+	if reqID != "" {
+		dstHeader.Set("X-Catyuki-Req-Id", reqID)
+	}
 
 	w.WriteHeader(status)
 	_, writeErr := w.Write(buf.Bytes())
@@ -297,6 +347,13 @@ func (g *ErrorGate) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 
+			case "request_id_header", "request_id_headers":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.ArgErr()
+				}
+				g.RequestIDHeaders = append(g.RequestIDHeaders, args...)
+
 			default:
 				return d.Errf("unknown error_gate option: %s", d.Val())
 			}
@@ -330,6 +387,32 @@ func wantsJSON(r *http.Request) bool {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		return true
+	}
+
+	// If the client explicitly accepts HTML, we should return HTML
+	if strings.Contains(accept, "text/html") {
+		return false
+	}
+
+	// Check if the User-Agent indicates a CLI tool or a programming language/library
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	if ua == "" {
+		return false
+	}
+
+	nonBrowserKeywords := []string{
+		"curl/", "wget/", "httpie", "postman", "bruno", "insomnia",
+		"python", "urllib", "requests", "aiohttp", "httpx",
+		"java/", "okhttp", "apache-httpclient", "retrofit",
+		"go-http-client", "axios/", "node-fetch", "undici", "got/",
+		"guzzle", "faraday", "rest-client", "reqwest", "libcurl",
+		"http-client", "restsharp", "playwright", "puppeteer",
+	}
+
+	for _, kw := range nonBrowserKeywords {
+		if strings.Contains(ua, kw) {
+			return true
+		}
 	}
 
 	return false
@@ -423,6 +506,46 @@ func getStatusDescription(status int) string {
 		return "遭遇了未知的神秘状况呢，请稍后再试一次吧~"
 	}
 }
+
+func (g ErrorGate) findRequestID(reqHeader, respHeader http.Header) string {
+	getVal := func(h http.Header, name string) string {
+		if val := h.Get(name); val != "" {
+			return val
+		}
+		for k, vv := range h {
+			if strings.EqualFold(k, name) && len(vv) > 0 {
+				return vv[0]
+			}
+		}
+		return ""
+	}
+
+	// 1. Try user-configured headers
+	for _, h := range g.RequestIDHeaders {
+		if val := getVal(respHeader, h); val != "" {
+			return val
+		}
+		if val := getVal(reqHeader, h); val != "" {
+			return val
+		}
+	}
+
+	// 2. Try default candidate headers
+	candidates := []string{"requestid", "x-requestid", "x-request-id", "x-req-id", "requestID"}
+	for _, h := range candidates {
+		if val := getVal(respHeader, h); val != "" {
+			return val
+		}
+	}
+	for _, h := range candidates {
+		if val := getVal(reqHeader, h); val != "" {
+			return val
+		}
+	}
+
+	return ""
+}
+
 
 var (
 	_ caddy.Module                = (*ErrorGate)(nil)

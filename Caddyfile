@@ -1,12 +1,17 @@
 # Caddyfile Example for error_gate
 
 :8080 {
+    header {
+        -Via
+        -Server
+    }
+
     # It is recommended to use the route block to guarantee execution order.
     # error_gate intercepts error status codes returned by backend handlers (e.g. reverse_proxy).
     route {
         error_gate {
             # Customize the HTTP header key used to carry the unique trace ID (default: X-Trace-Id)
-            trace_header X-Trace-Id
+            trace_header x-Catyuki-Lb-Id
 
             # Specific status codes to exclude from being intercepted by the error gate
             exclude 401 403
@@ -21,6 +26,12 @@
             # Optional: Path to a custom JSON template file.
             # If not specified, the built-in i18n JSON template is used.
             # json_template ./templates/custom.json
+
+            # Optional: Custom headers to look up for the Request ID.
+            # You can specify a single header or multiple headers.
+            # Candidates are checked in order; the first match will be propagated as X-Catyuki-Req-Id.
+            # request_id_header x-request-id
+            # request_id_headers x-request-id requestID x-req-id x-requestid
         }
 
         # Proxy requests to your upstream application server

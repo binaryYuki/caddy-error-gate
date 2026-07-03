@@ -28,6 +28,8 @@ type I18nStrings struct {
 	OriginalURI      string `json:"original_uri"`
 	TraceID          string `json:"trace_id"`
 	RequestID        string `json:"request_id"`
+	EdgeID           string `json:"edge_id"`
+	ContactSupport   string `json:"contact_support"`
 }
 
 func getLanguage(r *http.Request) string {
@@ -122,6 +124,8 @@ func getI18n(lang string, status int) I18nStrings {
 		OriginalURI:      translate(lang, "OriginalURI"),
 		TraceID:          translate(lang, "TraceID"),
 		RequestID:        translate(lang, "RequestID"),
+		EdgeID:           translate(lang, "EdgeID"),
+		ContactSupport:   translate(lang, "ContactSupport"),
 	}
 }
 
@@ -144,6 +148,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "原始 URI",
 			"TraceID":          "追踪 ID",
 			"RequestID":        "请求 ID",
+			"EdgeID":           "边缘 ID",
+			"ContactSupport":   "联系技术支持",
 		},
 		"en": {
 			"ConnectionStatus": "Connection status",
@@ -161,6 +167,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "Original URI",
 			"TraceID":          "Trace ID",
 			"RequestID":        "Request ID",
+			"EdgeID":           "Edge ID",
+			"ContactSupport":   "Contact Support",
 		},
 		"ar": {
 			"ConnectionStatus": "حالة الاتصال",
@@ -178,6 +186,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "عنوان URI الأصلي",
 			"TraceID":          "معرف التتبع",
 			"RequestID":        "معرف الطلب",
+			"EdgeID":           "معرف الحافة",
+			"ContactSupport":   "الاتصال بالدعم",
 		},
 		"fr": {
 			"ConnectionStatus": "Statut de la connexion",
@@ -195,6 +205,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "URI d'origine",
 			"TraceID":          "ID de trace",
 			"RequestID":        "ID de requête",
+			"EdgeID":           "ID de bord",
+			"ContactSupport":   "Contacter le support",
 		},
 		"ru": {
 			"ConnectionStatus": "Статус подключения",
@@ -212,6 +224,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "Исходный URI",
 			"TraceID":          "Идентификатор трассировки",
 			"RequestID":        "Идентификатор запроса",
+			"EdgeID":           "Идентификатор границы",
+			"ContactSupport":   "Связаться с поддержкой",
 		},
 		"es": {
 			"ConnectionStatus": "Estado de la conexión",
@@ -229,6 +243,8 @@ func translate(lang, key string) string {
 			"OriginalURI":      "URI original",
 			"TraceID":          "ID de traza",
 			"RequestID":        "ID de solicitud",
+			"EdgeID":           "ID de borde",
+			"ContactSupport":   "Contactar con soporte",
 		},
 	}
 
@@ -1166,3 +1182,53 @@ func getDescriptionTranslation(lang string, status int) string {
 		}
 	}
 }
+
+func getErrorDescription(lang string, status int, text string) string {
+	if status >= 400 && status <= 499 {
+		switch lang {
+		case "zh":
+			return text + " — 请求未成功完成。"
+		case "ar":
+			return text + " — لم يكتمل الطلب بنجاح."
+		case "fr":
+			return text + " — la requête n'a pas pu aboutir."
+		case "ru":
+			return text + " — запрос не был успешно завершен."
+		case "es":
+			return text + " — la solicitud no se completó correctamente."
+		default:
+			return text + " — the request did not complete successfully."
+		}
+	} else if status >= 500 && status <= 599 {
+		switch lang {
+		case "zh":
+			return text + " — 服务器无法完成该请求。"
+		case "ar":
+			return text + " — لم يتمكن الخادم من إكمال الطلب."
+		case "fr":
+			return text + " — le serveur n'a pas pu traiter la requête."
+		case "ru":
+			return text + " — сервер не смог выполнить запрос."
+		case "es":
+			return text + " — el servidor no pudo completar la solicitud."
+		default:
+			return text + " — the server could not complete the request."
+		}
+	} else {
+		switch lang {
+		case "zh":
+			return text + " — 请求以非预期状态结束。"
+		case "ar":
+			return text + " — انتهى الطلب بحالة غير متوقعة."
+		case "fr":
+			return text + " — La requête s'est terminée avec un statut inattendu."
+		case "ru":
+			return text + " — Запрос завершился с неожиданным статусом."
+		case "es":
+			return text + " — La solicitud finalizó con un estado inesperado."
+		default:
+			return text + " — The request ended with an unexpected status."
+		}
+	}
+}
+
